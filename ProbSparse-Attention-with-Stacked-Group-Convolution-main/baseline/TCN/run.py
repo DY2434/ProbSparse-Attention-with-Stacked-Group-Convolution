@@ -54,7 +54,7 @@ def main():
         # 调用模型训练和评估函数
         model, test_acc = train_and_test(X_train_fold, X_val_fold, X_test,
                                              Y_train_fold, Y_val_fold, Y_test,
-                                             num_classes, batch_size=64,
+                                             num_classes, batch_size=32,
                                              n_epochs=args.num_epochs,
                                              name_classes=class_names,
                                              patience=6, fold_num=fold,

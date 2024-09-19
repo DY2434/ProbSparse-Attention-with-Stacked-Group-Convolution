@@ -85,7 +85,7 @@ class TransformerModel(nn.Module):
             ResidualAdd(nn.Sequential(
                 nn.LayerNorm(d_model),
                 ConvolutionBlock2(250, 250, 
-                                  kernel_size=3, dropout_rate=0.5, groups=2)  # NTU-FI HumanID groups=5
+                                  kernel_size=3, dropout_rate=0.5, groups=2)
             ))
         )
         self.transformer_encoder = TransformerEncoder(self.encoder_layer, num_layers)

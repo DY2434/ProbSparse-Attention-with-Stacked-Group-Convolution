@@ -1,18 +1,17 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import seaborn as sns
+from sklearn.metrics import f1_score, confusion_matrix
 import copy
+import seaborn as sns
 import os
 from fvcore.nn import FlopCountAnalysis, parameter_count
-from sklearn.metrics import f1_score, confusion_matrix
+from TCN import TemporalConvNet
+from math import sqrt
 from matplotlib import pyplot as plt
-from transformer import TransformerModel
 
 
-def SGCT(X_train, X_val, X_test, Y_train, Y_val, Y_test,
-         num_classes, batch_size, n_epochs, name_classes, patience, 
-         fold_num, model_state_path=None):
+def train_and_test(X_train, X_val, X_test, Y_train, Y_val, Y_test, num_classes, batch_size, n_epochs, name_classes, patience, fold_num, model_state_path=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 将数据转换为PyTorch张量
@@ -25,11 +24,9 @@ def SGCT(X_train, X_val, X_test, Y_train, Y_val, Y_test,
 
     # 定义模型参数
     d_model = 342
-    nhead = 6
-    num_layers = 2
 
     # 实例化模型
-    model = TransformerModel(num_classes, d_model, nhead, num_layers).to(device)
+    model = Model(num_classes, d_model).to(device)
     # 新增代码：检查是否提供了预训练的模型状态路径
     if model_state_path is not None and os.path.isfile(model_state_path):
         # 加载预训练的模型状态字典
@@ -57,7 +54,7 @@ def SGCT(X_train, X_val, X_test, Y_train, Y_val, Y_test,
         print(f'Total Params: {total_params}')
 
         # 创建一个假的输入张量，模拟实际的输入数据（batch size，seq_length，feature_dim)，以走通一个反向传播从而计算出浮点运算次数
-        input_tensor = torch.randn(1, 250, 342).to(device)
+        input_tensor = torch.randn(1, 2000, 342).to(device)
 
         # 计算Flops：浮点运算次数
         flops = FlopCountAnalysis(model, input_tensor)
@@ -194,7 +191,7 @@ def SGCT(X_train, X_val, X_test, Y_train, Y_val, Y_test,
 
         plt.tight_layout()
 
-        training_curves_path = f'/kaggle/working/training_curves_fold_{fold_num}.png'  #更换环境需修改
+        training_curves_path = f'/kaggle/working/training_curves_fold_{fold_num}.png'
         plt.savefig(training_curves_path)
         plt.close()
 
@@ -228,18 +225,105 @@ def SGCT(X_train, X_val, X_test, Y_train, Y_val, Y_test,
     plt.xlabel('Predicted label')
 
     # 添加以下代码
-    confusion_matrix_path = f'/kaggle/working/confusion_matrix_fold_{fold_num}.png'  #更换环境需修改
+    confusion_matrix_path = f'/kaggle/working/confusion_matrix_fold_{fold_num}.png'
     plt.savefig(confusion_matrix_path)
     plt.close()
-
-    # 计算测试时的FLOPS和参数
-    input_tensor = torch.randn(1, 250, 342).to(device)
-    flops = FlopCountAnalysis(model, input_tensor)
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
+    #Image('confusion_matrix.png')
     print(f"Test Acc: {test_acc:.4f}, Test F1: {test_f1:.4f}")
-    print(f'Total Params: {total_params}')
-    print(f'Total FLOPs: {flops.total()}')
+    return model, test_acc  # 返回模型、测试集准确率和图表路径
 
-    return model, test_acc, total_params, flops.total()  # 返回模型、测试集准确率、参数数量和FLOPS
 
+class ConvolutionBlock1(nn.Module):
+    def __init__(self, d_model, hidden_dim, kernel_size, dropout_rate, groups):
+        super(ConvolutionBlock1, self).__init__()
+        # 确保d_model和hidden_dim能够被组数整除
+        assert d_model % groups == 0, "d_model must be divisible by groups"
+        assert hidden_dim % groups == 0, "hidden_dim must be divisible by groups"
+
+        self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=hidden_dim, kernel_size=kernel_size,
+                               padding=kernel_size // 2, groups=groups)
+        self.activation = nn.GELU()
+        self.conv2 = nn.Conv1d(in_channels=hidden_dim, out_channels=d_model, kernel_size=kernel_size,
+                               padding=kernel_size // 2, groups=groups)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.conv3 = nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=kernel_size,
+                               padding=kernel_size // 2, groups=groups)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)  # 转换为 (batch_size, channels, seq_length) 以适应一维卷积
+        x = self.activation(self.conv1(x))
+        x = self.channel_shuffle(x, groups=2)  # 确保这里的groups值与init中的一致
+        x = self.activation(self.conv2(x))
+        x = self.channel_shuffle(x, groups=2)
+        x = self.dropout(self.conv3(x))
+        x = x.transpose(1, 2)  # 转换回 (batch_size, seq_length, channels)
+        return x
+
+    def channel_shuffle(self, x, groups):
+        batch_size, num_channels, seq_length = x.size()
+        channels_per_group = num_channels // groups
+
+        # reshape
+        x = x.view(batch_size, groups, channels_per_group, seq_length)
+        # transpose
+        x = x.transpose(1, 2).contiguous()
+        # flatten
+        x = x.view(batch_size, -1, seq_length)
+        return x
+
+class ConvolutionBlock2(nn.Module):
+    def __init__(self, d_model, hidden_dim, kernel_size, dropout_rate, groups):
+        super(ConvolutionBlock2, self).__init__()
+        # 确保d_model和hidden_dim能够被组数整除
+        assert d_model % groups == 0, "d_model must be divisible by groups"
+        assert hidden_dim % groups == 0, "hidden_dim must be divisible by groups"
+
+        self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=hidden_dim, kernel_size=kernel_size,
+                               padding=kernel_size // 2, groups=groups)
+        self.activation = nn.GELU()
+        self.conv2 = nn.Conv1d(in_channels=hidden_dim, out_channels=d_model, kernel_size=kernel_size,
+                               padding=kernel_size // 2, groups=groups)
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, x):
+        x = self.dropout(self.activation(self.conv1(x)))
+        x = self.dropout(self.activation(self.conv2(x)))
+        return x
+
+
+class Model(nn.Module):
+    def __init__(self, num_classes, d_model, drop_p=0.3):
+        super().__init__()
+        self.adaptive_pool1 = nn.AdaptiveAvgPool1d(250)
+        self.LN1 = nn.LayerNorm(d_model)  # 加快模型收敛
+
+        self.TCNtransform = TemporalConvNet(num_inputs=342, num_channels=[342, 228, 114], kernel_size=3)
+        self.LN2 = nn.LayerNorm(114)
+        self.dropout = nn.Dropout(drop_p)  # 添加Dropout层
+
+        #self.GC1 = ConvolutionBlock1(114, 114, 3, 0.3, 2)
+        #self.GC2 = ConvolutionBlock2(250, 250, 3, 0.3, 2)
+
+        self.adaptive_pool2 = nn.AdaptiveMaxPool1d(1)
+
+        self.fc1 = nn.Linear(114, num_classes)
+
+    def forward(self, x):
+        device = x.device  # 直接从输入张量获取设备信息
+
+        x = x.transpose(1, 2)
+        x = self.adaptive_pool1(x)
+        x = x.transpose(1, 2)
+        x = self.LN1(x)
+
+        x = x.transpose(1, 2)
+        x_TCN = self.TCNtransform(x).to(device)
+        x_TCN = x_TCN.transpose(1, 2)
+        x = x_TCN
+        #x = self.GC1(x_TCN)
+        #x = self.GC2(x)
+
+        x = self.adaptive_pool2(x.transpose(1, 2)).squeeze(2)  # 使用自适应池化
+        x = self.dropout(self.LN2(x))
+        x = self.fc1(x)
+        return x

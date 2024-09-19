@@ -142,7 +142,7 @@ class NTU_Fi_GRU(nn.Module):
         self.fc = nn.Linear(64, num_classes)
 
     def forward(self, x):
-        x = x.view(-1, 342, 2000)
+        x = x.view(-1, 342, 500)
         x = x.permute(2, 0, 1)
         _, ht = self.gru(x)
         outputs = self.fc(ht[-1])
@@ -155,35 +155,27 @@ class NTU_Fi_BiLSTM(nn.Module):
         self.fc = nn.Linear(64, num_classes)
 
     def forward(self, x):
-        x = x.view(-1, 342, 2000)
+        x = x.view(-1, 342, 500)
         x = x.permute(2, 0, 1)
         _, (ht, ct) = self.lstm(x)
         outputs = self.fc(ht[-1])
         return outputs
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, in_channels=1, patch_size_w=9, patch_size_h=25, emb_size=9 * 25, img_size=342 * 1000):
-        super().__init__()
+    def __init__(self, in_channels=1, patch_size_w=9, patch_size_h=25, emb_size=9 * 25, img_size=342 * 500):
         self.patch_size_w = patch_size_w
         self.patch_size_h = patch_size_h
-        self.emb_size = emb_size
-        self.downsample = nn.Linear(2000, 1000)
+        super().__init__()
         self.projection = nn.Sequential(
-            nn.Conv2d(in_channels, emb_size, kernel_size=(patch_size_h, patch_size_w),
-                      stride=(patch_size_h, patch_size_w)),
+            nn.Conv2d(in_channels, emb_size, kernel_size=(patch_size_w, patch_size_h),
+                      stride=(patch_size_w, patch_size_h)),
             Rearrange('b e (h) (w) -> b (h w) e'),
         )
         self.cls_token = nn.Parameter(torch.randn(1, 1, emb_size))
-
-        # 计算序列长度
-        h_out = (342 - patch_size_h) // patch_size_h + 1
-        w_out = (1000 - patch_size_w) // patch_size_w + 1
-        self.num_patches = h_out * w_out
-        self.position = nn.Parameter(torch.randn(self.num_patches + 1, emb_size))
+        self.position = nn.Parameter(torch.randn(int(img_size / emb_size) + 1, emb_size))
 
     def forward(self, x):
-        x = x.view(-1, 1, 342, 2000)
-        x = self.downsample(x)
+        x = x.view(-1, 1, 342, 500)
         b, _, _, _ = x.shape
         x = self.projection(x)
         cls_tokens = repeat(self.cls_token, '() n e -> b n e', b=b)
@@ -282,7 +274,7 @@ class NTU_Fi_ViT(nn.Sequential):
                  patch_size_w=9,
                  patch_size_h=25,
                  emb_size=225,
-                 img_size=342 * 2000,
+                 img_size=342 * 500,
                  depth=1,
                  *,
                  num_classes,

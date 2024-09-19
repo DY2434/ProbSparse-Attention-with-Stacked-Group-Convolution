@@ -231,15 +231,6 @@ def SGCT(X_train, X_val, X_test, Y_train, Y_val, Y_test,
     confusion_matrix_path = f'/kaggle/working/confusion_matrix_fold_{fold_num}.png'  #更换环境需修改
     plt.savefig(confusion_matrix_path)
     plt.close()
-
-    # 计算测试时的FLOPS和参数
-    input_tensor = torch.randn(1, 250, 342).to(device)
-    flops = FlopCountAnalysis(model, input_tensor)
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
     print(f"Test Acc: {test_acc:.4f}, Test F1: {test_f1:.4f}")
-    print(f'Total Params: {total_params}')
-    print(f'Total FLOPs: {flops.total()}')
-
-    return model, test_acc, total_params, flops.total()  # 返回模型、测试集准确率、参数数量和FLOPS
+    return model, test_acc  # 返回模型、测试集准确率和图表路径
 

@@ -26,7 +26,7 @@ class CSI_Dataset():
             x = sio.loadmat(sample_dir)['CSIamp']  # 加载指定模态的数据
             x = np.array(x)
             x = (x - 42.3199) / 4.9802  # 标准化
-            # sampling: 2000 -> 500 500为packet
+            # sampling: 2000 -> 500
             #x = x[:, ::2]  # 降维
             x = x.transpose()  # 转置
 

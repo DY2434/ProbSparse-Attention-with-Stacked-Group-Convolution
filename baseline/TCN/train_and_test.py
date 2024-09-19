@@ -6,7 +6,7 @@ import copy
 import seaborn as sns
 import os
 from fvcore.nn import FlopCountAnalysis, parameter_count
-from TCN import TemporalConvNet
+from models.TCN import TemporalConvNet
 from math import sqrt
 from matplotlib import pyplot as plt
 
@@ -75,7 +75,7 @@ def train_and_test(X_train, X_val, X_test, Y_train, Y_val, Y_test, num_classes, 
         # factor：减少学习率的因子，即新的学习率 = 原学习率 * factor。
         # patience：在降低学习率前，允许指标多少个epochs没有性能改进，什么性能根据下面看。
         # threshold：测量新的最优值和旧的最优值的显著性差异。
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=4,
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience,
                                                                threshold=0.0005, cooldown=0, verbose=True)
 
         # 初始化最佳验证损失和最佳模型状态，用于早停时应用最佳模型状态来测试
@@ -232,77 +232,15 @@ def train_and_test(X_train, X_val, X_test, Y_train, Y_val, Y_test, num_classes, 
     print(f"Test Acc: {test_acc:.4f}, Test F1: {test_f1:.4f}")
     return model, test_acc  # 返回模型、测试集准确率和图表路径
 
-
-class ConvolutionBlock1(nn.Module):
-    def __init__(self, d_model, hidden_dim, kernel_size, dropout_rate, groups):
-        super(ConvolutionBlock1, self).__init__()
-        # 确保d_model和hidden_dim能够被组数整除
-        assert d_model % groups == 0, "d_model must be divisible by groups"
-        assert hidden_dim % groups == 0, "hidden_dim must be divisible by groups"
-
-        self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=hidden_dim, kernel_size=kernel_size,
-                               padding=kernel_size // 2, groups=groups)
-        self.activation = nn.GELU()
-        self.conv2 = nn.Conv1d(in_channels=hidden_dim, out_channels=d_model, kernel_size=kernel_size,
-                               padding=kernel_size // 2, groups=groups)
-        self.dropout = nn.Dropout(dropout_rate)
-        self.conv3 = nn.Conv1d(in_channels=d_model, out_channels=d_model, kernel_size=kernel_size,
-                               padding=kernel_size // 2, groups=groups)
-
-    def forward(self, x):
-        x = x.transpose(1, 2)  # 转换为 (batch_size, channels, seq_length) 以适应一维卷积
-        x = self.activation(self.conv1(x))
-        x = self.channel_shuffle(x, groups=2)  # 确保这里的groups值与init中的一致
-        x = self.activation(self.conv2(x))
-        x = self.channel_shuffle(x, groups=2)
-        x = self.dropout(self.conv3(x))
-        x = x.transpose(1, 2)  # 转换回 (batch_size, seq_length, channels)
-        return x
-
-    def channel_shuffle(self, x, groups):
-        batch_size, num_channels, seq_length = x.size()
-        channels_per_group = num_channels // groups
-
-        # reshape
-        x = x.view(batch_size, groups, channels_per_group, seq_length)
-        # transpose
-        x = x.transpose(1, 2).contiguous()
-        # flatten
-        x = x.view(batch_size, -1, seq_length)
-        return x
-
-class ConvolutionBlock2(nn.Module):
-    def __init__(self, d_model, hidden_dim, kernel_size, dropout_rate, groups):
-        super(ConvolutionBlock2, self).__init__()
-        # 确保d_model和hidden_dim能够被组数整除
-        assert d_model % groups == 0, "d_model must be divisible by groups"
-        assert hidden_dim % groups == 0, "hidden_dim must be divisible by groups"
-
-        self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=hidden_dim, kernel_size=kernel_size,
-                               padding=kernel_size // 2, groups=groups)
-        self.activation = nn.GELU()
-        self.conv2 = nn.Conv1d(in_channels=hidden_dim, out_channels=d_model, kernel_size=kernel_size,
-                               padding=kernel_size // 2, groups=groups)
-        self.dropout = nn.Dropout(dropout_rate)
-
-    def forward(self, x):
-        x = self.dropout(self.activation(self.conv1(x)))
-        x = self.dropout(self.activation(self.conv2(x)))
-        return x
-
-
 class Model(nn.Module):
-    def __init__(self, num_classes, d_model, drop_p=0.3):
+    def __init__(self, num_classes, d_model, drop_p=0.5):
         super().__init__()
-        self.adaptive_pool1 = nn.AdaptiveAvgPool1d(250)
-        self.LN1 = nn.LayerNorm(d_model)  # 加快模型收敛
+        # self.adaptive_pool1 = nn.AdaptiveAvgPool1d(250)
+        # self.LN1 = nn.LayerNorm(d_model)  # 加快模型收敛
 
         self.TCNtransform = TemporalConvNet(num_inputs=342, num_channels=[342, 228, 114], kernel_size=3)
         self.LN2 = nn.LayerNorm(114)
         self.dropout = nn.Dropout(drop_p)  # 添加Dropout层
-
-        #self.GC1 = ConvolutionBlock1(114, 114, 3, 0.3, 2)
-        #self.GC2 = ConvolutionBlock2(250, 250, 3, 0.3, 2)
 
         self.adaptive_pool2 = nn.AdaptiveMaxPool1d(1)
 
@@ -311,17 +249,15 @@ class Model(nn.Module):
     def forward(self, x):
         device = x.device  # 直接从输入张量获取设备信息
 
-        x = x.transpose(1, 2)
-        x = self.adaptive_pool1(x)
-        x = x.transpose(1, 2)
-        x = self.LN1(x)
+        # x = x.transpose(1, 2)
+        # x = self.adaptive_pool1(x)
+        # x = x.transpose(1, 2)
+        # x = self.LN1(x)
 
         x = x.transpose(1, 2)
         x_TCN = self.TCNtransform(x).to(device)
         x_TCN = x_TCN.transpose(1, 2)
         x = x_TCN
-        #x = self.GC1(x_TCN)
-        #x = self.GC2(x)
 
         x = self.adaptive_pool2(x.transpose(1, 2)).squeeze(2)  # 使用自适应池化
         x = self.dropout(self.LN2(x))

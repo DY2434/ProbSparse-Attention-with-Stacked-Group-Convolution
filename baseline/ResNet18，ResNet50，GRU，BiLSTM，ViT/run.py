@@ -2,76 +2,99 @@ import numpy as np
 import torch
 import torch.nn as nn
 import argparse
-from util import load_data_n_model
+from models.util import load_data_n_model
+from sklearn.metrics import f1_score
+from thop import profile
+
+
+def calculate_f1(y_true, y_pred):
+    return f1_score(y_true.cpu().numpy(), y_pred.cpu().numpy(), average='weighted')
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def estimate_complexity(model, input_size):
+    device = next(model.parameters()).device
+    input = torch.randn(1, *input_size).to(device)
+    flops, params = profile(model, inputs=(input,))
+    return flops, params
 
 
 def train(model, tensor_loader, num_epochs, learning_rate, criterion, device):
-    model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     for epoch in range(num_epochs):
         model.train()
         epoch_loss = 0
         epoch_accuracy = 0
-        for data in tensor_loader:
-            inputs, labels = data
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            labels = labels.type(torch.LongTensor)
+        epoch_f1 = 0
+        for inputs, labels in tensor_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            labels = labels.long()
 
             optimizer.zero_grad()
             outputs = model(inputs)
-            outputs = outputs.to(device)
-            outputs = outputs.type(torch.FloatTensor)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
             epoch_loss += loss.item() * inputs.size(0)
-            predict_y = torch.argmax(outputs, dim=1).to(device)
-            epoch_accuracy += (predict_y == labels.to(device)).sum().item() / labels.size(0)
-        epoch_loss = epoch_loss / len(tensor_loader.dataset)
-        epoch_accuracy = epoch_accuracy / len(tensor_loader)
-        print('Epoch:{}, Accuracy:{:.4f},Loss:{:.9f}'.format(epoch + 1, float(epoch_accuracy), float(epoch_loss)))
-    return
+            predict_y = torch.argmax(outputs, dim=1)
+            epoch_accuracy += (predict_y == labels).float().mean().item()
+            epoch_f1 += calculate_f1(labels, predict_y)
+
+        epoch_loss /= len(tensor_loader.dataset)
+        epoch_accuracy /= len(tensor_loader)
+        epoch_f1 /= len(tensor_loader)
+        print(f'Epoch:{epoch + 1}, Accuracy:{epoch_accuracy:.4f}, F1:{epoch_f1:.4f}, Loss:{epoch_loss:.9f}')
 
 
 def test(model, tensor_loader, criterion, device):
     model.eval()
     test_acc = 0
     test_loss = 0
-    for data in tensor_loader:
-        inputs, labels = data
-        inputs = inputs.to(device)
-        labels.to(device)
-        labels = labels.type(torch.LongTensor)
+    test_f1 = 0
+    with torch.no_grad():
+        for inputs, labels in tensor_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            labels = labels.long()
 
-        outputs = model(inputs)
-        outputs = outputs.type(torch.FloatTensor)
-        outputs.to(device)
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            predict_y = torch.argmax(outputs, dim=1)
+            accuracy = (predict_y == labels).float().mean().item()
+            test_acc += accuracy
+            test_loss += loss.item() * inputs.size(0)
+            test_f1 += calculate_f1(labels, predict_y)
 
-        loss = criterion(outputs, labels)
-        predict_y = torch.argmax(outputs, dim=1).to(device)
-        accuracy = (predict_y == labels.to(device)).sum().item() / labels.size(0)
-        test_acc += accuracy
-        test_loss += loss.item() * inputs.size(0)
-    test_acc = test_acc / len(tensor_loader)
-    test_loss = test_loss / len(tensor_loader.dataset)
-    print("validation accuracy:{:.4f}, loss:{:.5f}".format(float(test_acc), float(test_loss)))
-    return
+    test_acc /= len(tensor_loader)
+    test_loss /= len(tensor_loader.dataset)
+    test_f1 /= len(tensor_loader)
+    print(f"Validation accuracy:{test_acc:.4f}, F1:{test_f1:.4f}, loss:{test_loss:.5f}")
 
 
 def main():
-    root = '/public/home/acl4z8qc4h/'
+    root = '/kaggle/input/ntu-fi-har/'
     parser = argparse.ArgumentParser('WiFi Imaging Benchmark')
     parser.add_argument('--dataset', choices=['UT_HAR_data', 'NTU-Fi-HumanID', 'NTU-Fi_HAR'])
-    parser.add_argument('--model',
-                        choices=['ResNet18', 'ResNet50','GRU', 'BiLSTM', 'ViT'])
+    parser.add_argument('--model', choices=['ResNet18', 'ResNet50', 'GRU', 'BiLSTM', 'ViT'])
     args = parser.parse_args()
+
+    print(f"using dataset: {args.dataset}")
+    print(f"using model: {args.model}")
 
     train_loader, test_loader, model, train_epoch = load_data_n_model(args.dataset, args.model, root)
     criterion = nn.CrossEntropyLoss()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+
+    num_params = count_parameters(model)
+    print(f"Number of trainable parameters: {num_params}")
+
+    input_size = (3, 114, 2000)
+    flops, _ = estimate_complexity(model, input_size)
+    print(f"Estimated FLOPs: {flops}")
 
     train(
         model=model,
@@ -87,7 +110,6 @@ def main():
         criterion=criterion,
         device=device
     )
-    return
 
 
 if __name__ == "__main__":
